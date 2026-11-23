@@ -27,10 +27,12 @@ constexpr int FRAME_SAMPLES = (PREAMBLE_SYMBOLS + PAYLOAD_SYMBOLS) * SAMPLES_PER
 constexpr int FRAME_WINDOW_SAMPLES = FRAME_SAMPLES + SAMPLES_PER_SYMBOL - 1;
 constexpr std::uint64_t QUIET_WINDOW_US = 250'000;
 constexpr float MIN_PREAMBLE_SCORE = 0.72f;
+constexpr float YURLAPS_MIN_PREAMBLE_SCORE = 0.62f;
 constexpr float QUICK_PREAMBLE_SCORE = 0.12f;
 constexpr int QUICK_PREAMBLE_SYMBOLS = 8;
 constexpr float MIN_SIGNAL_DB = -40.0f;
 constexpr float MIN_SNR_DB = 4.0f;
+constexpr float YURLAPS_MIN_SNR_DB = 3.0f;
 constexpr std::size_t NOISE_WINDOW_SIZE = 4096;
 constexpr std::uint16_t OPN_PREAMBLE = 0xf9a8;
 constexpr std::uint16_t AMB_PREAMBLE = 0x51e4;
@@ -405,13 +407,13 @@ void IqDecoder::emit(Pending& pending) {
         static_cast<std::uint32_t>(pending.hits.size()),
         estimate.duration_us,
         estimate.mer_db,
+        pending.protocol == IqProtocol::YURLAPS && pending.last_sequence
+            ? pending.last_sequence : std::nullopt,
     };
     callback_(passing);
 }
 
 void IqDecoder::flush_expired(std::uint64_t now_sample) {
-    const std::uint64_t quiet_samples = static_cast<std::uint64_t>(
-        std::llround(QUIET_WINDOW_US * sample_rate_ / 1'000'000.0));
     std::vector<Pending> ready;
     for (auto it = pending_.begin(); it != pending_.end();) {
         if (it->second.hits.empty()) {
@@ -419,6 +421,10 @@ void IqDecoder::flush_expired(std::uint64_t now_sample) {
             continue;
         }
         const auto last = it->second.hits.back().sample_index;
+        const auto window_us = it->second.protocol == IqProtocol::YURLAPS
+            ? 40'000ull : QUIET_WINDOW_US;
+        const auto quiet_samples = static_cast<std::uint64_t>(
+            std::llround(static_cast<double>(window_us) * sample_rate_ / 1'000'000.0));
         if (now_sample > last && now_sample - last > quiet_samples) {
             ready.push_back(std::move(it->second));
             it = pending_.erase(it);
@@ -435,13 +441,20 @@ void IqDecoder::flush_expired(std::uint64_t now_sample) {
 }
 
 void IqDecoder::add_hit(const IqPassing& hit) {
-    const auto key = (static_cast<std::uint64_t>(hit.protocol == IqProtocol::AMB) << 32u) | hit.id;
+    const auto protocol_key = hit.protocol == IqProtocol::YURLAPS ? 2ull
+        : hit.protocol == IqProtocol::AMB ? 1ull : 0ull;
+    const auto key = (protocol_key << 32u) | hit.id;
     auto found = pending_.find(key);
     if (found == pending_.end()) {
-        Pending pending{hit.protocol, hit.id, {HitSample{hit.sample_index, hit.rssi_db, hit.mer_db}}};
+        Pending pending{hit.protocol, hit.id, {HitSample{hit.sample_index, hit.rssi_db, hit.mer_db}}, {}, hit.sequence};
+        if (hit.sequence) pending.yurlaps_sequences.insert(*hit.sequence);
         pending_.emplace(key, std::move(pending));
         return;
     }
+    if (hit.protocol == IqProtocol::YURLAPS && hit.sequence
+        && !found->second.yurlaps_sequences.insert(*hit.sequence).second) return;
+    if (hit.protocol == IqProtocol::YURLAPS && hit.sequence)
+        found->second.last_sequence = hit.sequence;
     found->second.hits.push_back({hit.sample_index, hit.rssi_db, hit.mer_db});
 }
 
@@ -464,7 +477,9 @@ bool IqDecoder::scan() {
                 const auto candidate = match_preamble(buffer_, offset, preamble, protocol);
                 if (candidate.score > at_offset.score) at_offset = candidate;
             }
-            if (at_offset.score >= MIN_PREAMBLE_SCORE) {
+            const float preamble_threshold = at_offset.protocol == IqProtocol::YURLAPS
+                ? YURLAPS_MIN_PREAMBLE_SCORE : MIN_PREAMBLE_SCORE;
+            if (at_offset.score >= preamble_threshold) {
                 best = at_offset;
                 best_offset = offset;
                 found = true;
@@ -483,15 +498,22 @@ bool IqDecoder::scan() {
         ++frames_received_;
         const float noise_db = noise_floor_db();
         const bool noise_ready = std::isfinite(noise_db) && noise_power_window_.size() >= 256;
+        const float required_snr = best.protocol == IqProtocol::YURLAPS
+            ? YURLAPS_MIN_SNR_DB : MIN_SNR_DB;
         const bool signal_above_noise = noise_ready
-            ? (metrics.signal_db - noise_db >= MIN_SNR_DB)
+            ? (metrics.signal_db - noise_db >= required_snr)
             : (metrics.signal_db >= MIN_SIGNAL_DB);
         bool frame_processed = false;
         std::optional<std::uint32_t> id;
+        std::optional<std::uint8_t> yurlaps_sequence;
         std::uint8_t amb_status = 0;
         if (best.protocol == IqProtocol::YURLAPS) {
-            if (const auto frame = decode_yurlaps(softbits)) id = frame->id;
-            frame_processed = id.has_value() && signal_above_noise;
+            if (const auto frame = decode_yurlaps(softbits)) {
+                id = frame->id;
+                yurlaps_sequence = frame->sequence;
+            }
+            frame_processed = id.has_value() && signal_above_noise
+                && metrics.mer_db >= -2.0f;
         } else if (best.protocol == IqProtocol::OPN) {
             id = decode_opn(softbits);
             frame_processed = id.has_value() && signal_above_noise;
@@ -506,17 +528,17 @@ bool IqDecoder::scan() {
         const std::uint64_t preamble_sample = absolute_samples_ + best_offset;
         if (signal_above_noise && id && best.protocol == IqProtocol::YURLAPS) {
             if (hit_callback_) hit_callback_({preamble_sample, timestamp_for_sample(preamble_sample), best.protocol,
-                                               *id, metrics.signal_db, metrics.mer_db, 0});
+                                               *id, metrics.signal_db, metrics.mer_db, 0, yurlaps_sequence});
             add_hit({preamble_sample, timestamp_for_sample(preamble_sample), best.protocol,
-                     *id, metrics.signal_db, 1, 0, metrics.mer_db});
+                     *id, metrics.signal_db, 1, 0, metrics.mer_db, yurlaps_sequence});
         } else if (signal_above_noise && id && best.protocol == IqProtocol::OPN) {
             if (*id < 10'000'000u) {
                 if (hit_callback_) {
                     hit_callback_({preamble_sample, timestamp_for_sample(preamble_sample), best.protocol,
-                                   *id, metrics.signal_db, metrics.mer_db, 0});
+                                   *id, metrics.signal_db, metrics.mer_db, 0, std::nullopt});
                 }
                 add_hit({preamble_sample, timestamp_for_sample(preamble_sample), best.protocol,
-                         *id, metrics.signal_db, 1, 0, metrics.mer_db});
+                         *id, metrics.signal_db, 1, 0, metrics.mer_db, std::nullopt});
             } else if ((*id & 0x00a00000u) == 0x00a00000u && time_sync_callback_) {
                 time_sync_callback_({timestamp_for_sample(preamble_sample), *id,
                                       *id & 0x000fffffu});
@@ -525,10 +547,10 @@ bool IqDecoder::scan() {
                    && accept_amb(preamble_sample, *id, amb_status)) {
             if (hit_callback_) {
                 hit_callback_({preamble_sample, timestamp_for_sample(preamble_sample), best.protocol,
-                               *id, metrics.signal_db, metrics.mer_db, amb_status});
+                               *id, metrics.signal_db, metrics.mer_db, amb_status, std::nullopt});
             }
             add_hit({preamble_sample, timestamp_for_sample(preamble_sample), best.protocol,
-                     *id, metrics.signal_db, 1, 0, metrics.mer_db});
+                     *id, metrics.signal_db, 1, 0, metrics.mer_db, std::nullopt});
         }
         cursor = best_offset + static_cast<std::size_t>(FRAME_SAMPLES);
     }
