@@ -2,6 +2,7 @@
 
 #include "yurlaps_decoder/amb.hpp"
 #include "yurlaps_decoder/opn.hpp"
+#include "yurlaps_decoder/yurlaps.hpp"
 
 #include <algorithm>
 #include <array>
@@ -21,7 +22,7 @@ namespace {
 
 constexpr int SAMPLES_PER_SYMBOL = 2;
 constexpr int PREAMBLE_SYMBOLS = 16;
-constexpr int PAYLOAD_SYMBOLS = 80;
+constexpr int PAYLOAD_SYMBOLS = static_cast<int>(YURLAPS_PAYLOAD_SYMBOLS);
 constexpr int FRAME_SAMPLES = (PREAMBLE_SYMBOLS + PAYLOAD_SYMBOLS) * SAMPLES_PER_SYMBOL;
 constexpr int FRAME_WINDOW_SAMPLES = FRAME_SAMPLES + SAMPLES_PER_SYMBOL - 1;
 constexpr std::uint64_t QUIET_WINDOW_US = 250'000;
@@ -33,6 +34,7 @@ constexpr float MIN_SNR_DB = 4.0f;
 constexpr std::size_t NOISE_WINDOW_SIZE = 4096;
 constexpr std::uint16_t OPN_PREAMBLE = 0xf9a8;
 constexpr std::uint16_t AMB_PREAMBLE = 0x51e4;
+constexpr std::uint16_t YURLAPS_PREAMBLE = 0xa65c;
 constexpr float ADC_FULL_SCALE = 1.41421356237f;
 
 struct Candidate {
@@ -431,6 +433,7 @@ bool IqDecoder::scan() {
              ++offset) {
             Candidate at_offset;
             for (const auto [preamble, protocol] : {
+                     std::pair<std::uint16_t, IqProtocol>{YURLAPS_PREAMBLE, IqProtocol::YURLAPS},
                      std::pair<std::uint16_t, IqProtocol>{OPN_PREAMBLE, IqProtocol::OPN},
                      std::pair<std::uint16_t, IqProtocol>{AMB_PREAMBLE, IqProtocol::AMB}}) {
                 if (!quick_preamble_gate(buffer_, offset, preamble)) continue;
@@ -462,7 +465,10 @@ bool IqDecoder::scan() {
         bool frame_processed = false;
         std::optional<std::uint32_t> id;
         std::uint8_t amb_status = 0;
-        if (best.protocol == IqProtocol::OPN) {
+        if (best.protocol == IqProtocol::YURLAPS) {
+            if (const auto frame = decode_yurlaps(softbits)) id = frame->id;
+            frame_processed = id.has_value() && signal_above_noise;
+        } else if (best.protocol == IqProtocol::OPN) {
             id = decode_opn(softbits);
             frame_processed = id.has_value() && signal_above_noise;
         } else if (const auto frame = decode_amb_rc3(softbits)) {
@@ -474,7 +480,12 @@ bool IqDecoder::scan() {
         if (frame_processed) ++frames_processed_;
 
         const std::uint64_t preamble_sample = absolute_samples_ + best_offset;
-        if (signal_above_noise && id && best.protocol == IqProtocol::OPN) {
+        if (signal_above_noise && id && best.protocol == IqProtocol::YURLAPS) {
+            if (hit_callback_) hit_callback_({preamble_sample, timestamp_for_sample(preamble_sample), best.protocol,
+                                               *id, metrics.signal_db, metrics.mer_db, 0});
+            add_hit({preamble_sample, timestamp_for_sample(preamble_sample), best.protocol,
+                     *id, metrics.signal_db, 1, 0, metrics.mer_db});
+        } else if (signal_above_noise && id && best.protocol == IqProtocol::OPN) {
             if (*id < 10'000'000u) {
                 if (hit_callback_) {
                     hit_callback_({preamble_sample, timestamp_for_sample(preamble_sample), best.protocol,

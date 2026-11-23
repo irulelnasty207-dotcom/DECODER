@@ -14,7 +14,7 @@
 
 namespace yurlaps::decoder {
 
-enum class IqProtocol { OPN, AMB };
+enum class IqProtocol { YURLAPS, OPN, AMB };
 
 struct IqSample {
     float i{};
@@ -65,9 +65,8 @@ struct IqTimeSync {
 
 using TimeSyncCallback = std::function<void(const IqTimeSync&)>;
 
-// Clean-room OPN baseband detector. The input is unsigned interleaved RTL-SDR
-// IQ at 2.5 MS/s, centered on the 5 MHz OPN carrier. No OpenStint code is
-// linked or required.
+// Multi-protocol baseband detector for YurLaps, OPN, and AMB RC3 on the 5 MHz
+// loop carrier. No external decoder library is linked.
 class IqDecoder {
 public:
     explicit IqDecoder(double sample_rate = 2'500'000.0);

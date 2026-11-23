@@ -11,6 +11,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_library(yurlaps_decoder_core
     src/protocol.cpp
     src/opn.cpp
+    src/yurlaps.cpp
     src/iq.cpp
     src/passing.cpp
     src/amb.cpp

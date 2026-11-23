@@ -8,7 +8,7 @@
 
 namespace yurlaps::decoder {
 
-enum class TransponderType { OPN, AMB };
+enum class TransponderType { YURLAPS, OPN, AMB };
 
 struct Passing {
     std::uint64_t timestamp_ms{};

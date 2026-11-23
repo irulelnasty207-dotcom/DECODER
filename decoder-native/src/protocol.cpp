@@ -38,6 +38,7 @@ std::optional<T> number(const std::string& value) {
 }
 
 std::optional<TransponderType> type_of(const std::string& value) {
+    if (value == "YUL" || value == "YURLAPS") return TransponderType::YURLAPS;
     if (value == "OPN") return TransponderType::OPN;
     if (value == "AMB") return TransponderType::AMB;
     return std::nullopt;
@@ -99,7 +100,7 @@ std::string format_event(const Event& event) {
         using T = std::decay_t<decltype(value)>;
         if constexpr (std::is_same_v<T, Passing>) {
             out << "P " << value.timestamp_ms << ' '
-                << (value.type == TransponderType::OPN ? "OPN" : "AMB") << ' '
+                << (value.type == TransponderType::YURLAPS ? "YUL" : value.type == TransponderType::OPN ? "OPN" : "AMB") << ' '
                 << value.id << ' ' << value.rssi << ' ' << value.hits << ' '
                 << value.duration_us;
             if (value.mer) out << ' ' << *value.mer;
@@ -110,7 +111,7 @@ std::string format_event(const Event& event) {
             if (value.jitter_p95_ms) out << ' ' << *value.jitter_p95_ms;
         } else {
             out << "T " << value.timestamp_ms << ' '
-                << (value.type == TransponderType::OPN ? "OPN" : "AMB") << ' '
+                << (value.type == TransponderType::YURLAPS ? "YUL" : value.type == TransponderType::OPN ? "OPN" : "AMB") << ' '
                 << value.id << ' ' << value.transponder_timecode;
         }
     }, event);

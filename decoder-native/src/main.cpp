@@ -21,7 +21,7 @@ int run_iq(const std::string& path) {
     yurlaps::decoder::IqDecoder decoder;
     decoder.set_callback([](const yurlaps::decoder::IqPassing& passing) {
         std::cout << "P " << passing.timestamp_us / 1000 << ' '
-                  << (passing.protocol == yurlaps::decoder::IqProtocol::OPN ? "OPN" : "AMB")
+                  << (passing.protocol == yurlaps::decoder::IqProtocol::YURLAPS ? "YUL" : passing.protocol == yurlaps::decoder::IqProtocol::OPN ? "OPN" : "AMB")
                   << ' ' << passing.id
                   << ' ' << std::fixed << std::setprecision(2) << passing.rssi_db
                   << ' ' << passing.hits << ' ' << passing.duration_us
@@ -53,7 +53,7 @@ int run_iq(const std::string& path) {
 void enable_debug(yurlaps::decoder::IqDecoder& decoder) {
     decoder.set_hit_callback([](const yurlaps::decoder::IqHit& hit) {
         std::cout << "H " << hit.timestamp_us / 1000 << ' '
-                  << (hit.protocol == yurlaps::decoder::IqProtocol::OPN ? "OPN" : "AMB")
+                  << (hit.protocol == yurlaps::decoder::IqProtocol::YURLAPS ? "YUL" : hit.protocol == yurlaps::decoder::IqProtocol::OPN ? "OPN" : "AMB")
                   << ' ' << hit.id << ' ' << std::fixed << std::setprecision(2)
                   << hit.rssi_db << ' ' << std::setprecision(1) << hit.mer_db
                   << ' ' << static_cast<unsigned>(hit.status) << '\n' << std::flush;
@@ -74,7 +74,7 @@ int main(int argc, char** argv) {
             enable_debug(decoder);
             decoder.set_callback([](const yurlaps::decoder::IqPassing& passing) {
                 std::cout << "P " << passing.timestamp_us / 1000 << ' '
-                          << (passing.protocol == yurlaps::decoder::IqProtocol::OPN ? "OPN" : "AMB")
+                          << (passing.protocol == yurlaps::decoder::IqProtocol::YURLAPS ? "YUL" : passing.protocol == yurlaps::decoder::IqProtocol::OPN ? "OPN" : "AMB")
                           << ' ' << passing.id << ' ' << std::fixed << std::setprecision(2)
                           << passing.rssi_db << ' ' << passing.hits << ' ' << passing.duration_us
                           << ' ' << std::setprecision(1) << passing.mer_db << '\n' << std::flush;
@@ -114,7 +114,7 @@ int main(int argc, char** argv) {
         decoder.set_callback([&publisher](const yurlaps::decoder::IqPassing& passing) {
             std::ostringstream line;
             line << "P " << passing.timestamp_us / 1000 << ' '
-                      << (passing.protocol == yurlaps::decoder::IqProtocol::OPN ? "OPN" : "AMB")
+                      << (passing.protocol == yurlaps::decoder::IqProtocol::YURLAPS ? "YUL" : passing.protocol == yurlaps::decoder::IqProtocol::OPN ? "OPN" : "AMB")
                       << ' ' << passing.id << ' ' << std::fixed << std::setprecision(2)
                       << passing.rssi_db << ' ' << passing.hits << ' ' << passing.duration_us
                       << ' ' << std::setprecision(1) << passing.mer_db
