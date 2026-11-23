@@ -22,10 +22,11 @@ namespace {
 
 constexpr int SAMPLES_PER_SYMBOL = 2;
 constexpr int PREAMBLE_SYMBOLS = 16;
-constexpr int YURLAPS_INIT_SYMBOLS = 4;
 constexpr int PAYLOAD_SYMBOLS = static_cast<int>(YURLAPS_PAYLOAD_SYMBOLS);
-constexpr int FRAME_SAMPLES = (PREAMBLE_SYMBOLS + PAYLOAD_SYMBOLS) * SAMPLES_PER_SYMBOL;
-constexpr int FRAME_WINDOW_SAMPLES = FRAME_SAMPLES + SAMPLES_PER_SYMBOL - 1;
+constexpr int FRAME_BODY_SAMPLES = (PREAMBLE_SYMBOLS + PAYLOAD_SYMBOLS) * SAMPLES_PER_SYMBOL;
+constexpr int FRAME_WINDOW_SAMPLES = FRAME_BODY_SAMPLES + SAMPLES_PER_SYMBOL - 1;
+constexpr int YURLAPS_INIT_SAMPLES = static_cast<int>(YURLAPS_INIT_SYMBOLS) * SAMPLES_PER_SYMBOL;
+constexpr int YURLAPS_TAIL_SAMPLES = static_cast<int>(YURLAPS_TAIL_SYMBOLS) * SAMPLES_PER_SYMBOL;
 constexpr std::uint64_t QUIET_WINDOW_US = 250'000;
 constexpr float MIN_PREAMBLE_SCORE = 0.72f;
 constexpr float YURLAPS_MIN_PREAMBLE_SCORE = 0.62f;
@@ -37,7 +38,6 @@ constexpr float YURLAPS_MIN_SNR_DB = 3.0f;
 constexpr std::size_t NOISE_WINDOW_SIZE = 4096;
 constexpr std::uint16_t OPN_PREAMBLE = 0xf9a8;
 constexpr std::uint16_t AMB_PREAMBLE = 0x51e4;
-constexpr std::uint16_t YURLAPS_PREAMBLE = 0xae68;
 constexpr float ADC_FULL_SCALE = 1.41421356237f;
 
 struct Candidate {
@@ -85,6 +85,27 @@ Candidate match_preamble(const std::vector<IqSample>& samples,
         }
     }
     return best;
+}
+
+bool yurlaps_init_matches(const std::vector<IqSample>& samples,
+                          std::size_t frame_offset,
+                          const Candidate& candidate) {
+    std::complex<float> init_correlation{};
+    float init_energy = 0.0f;
+    for (std::size_t symbol = 0; symbol < YURLAPS_INIT_SYMBOLS; ++symbol) {
+        const auto sample_offset = frame_offset
+            + symbol * static_cast<std::size_t>(SAMPLES_PER_SYMBOL)
+            + static_cast<std::size_t>(candidate.phase);
+        const std::complex<float> value{samples[sample_offset].i, samples[sample_offset].q};
+        // Init symbols are four coherent zero symbols, the negative BPSK phase.
+        init_correlation -= value;
+        init_energy += std::norm(value);
+    }
+    const float marker_energy = std::norm(candidate.correlation);
+    if (init_energy < 1e-6f || marker_energy < 1e-6f) return false;
+    const float alignment = std::real(init_correlation * std::conj(candidate.correlation))
+        / std::sqrt(init_energy * marker_energy);
+    return alignment >= 0.25f;
 }
 
 // Full preamble scoring is deliberately expensive because it also estimates
@@ -438,28 +459,40 @@ bool IqDecoder::scan() {
         Candidate best;
         std::size_t best_offset = cursor;
         bool found = false;
+        // The demodulator already evaluates both sample phases. Advancing by
+        // one symbol avoids treating the same frame one sample earlier as a
+        // different frame, which is especially important because OPN and the
+        // YLP-1 Barker marker share 0xF9A8.
         for (std::size_t offset = cursor;
              offset + FRAME_WINDOW_SAMPLES <= buffer_.size() && !found;
-             ++offset) {
+             offset += static_cast<std::size_t>(SAMPLES_PER_SYMBOL)) {
             Candidate at_offset;
             for (const auto [preamble, protocol] : {
                      std::pair<std::uint16_t, IqProtocol>{YURLAPS_PREAMBLE, IqProtocol::YURLAPS},
                      std::pair<std::uint16_t, IqProtocol>{OPN_PREAMBLE, IqProtocol::OPN},
                      std::pair<std::uint16_t, IqProtocol>{AMB_PREAMBLE, IqProtocol::AMB}}) {
                 const auto marker_offset = protocol == IqProtocol::YURLAPS
-                    ? offset + static_cast<std::size_t>(YURLAPS_INIT_SYMBOLS * SAMPLES_PER_SYMBOL)
+                    ? offset + static_cast<std::size_t>(YURLAPS_INIT_SAMPLES)
                     : offset;
                 if (marker_offset + FRAME_WINDOW_SAMPLES > buffer_.size()) continue;
                 if (!quick_preamble_gate(buffer_, marker_offset, preamble)) continue;
                 const auto candidate = match_preamble(buffer_, marker_offset, preamble, protocol);
-                if (candidate.score > at_offset.score) at_offset = candidate;
+                if (protocol == IqProtocol::YURLAPS
+                    && !yurlaps_init_matches(buffer_, offset, candidate)) {
+                    continue;
+                }
+                const bool stronger = candidate.score > at_offset.score + 1e-6f;
+                const bool equal_legacy = std::fabs(candidate.score - at_offset.score) <= 1e-6f
+                    && candidate.protocol != IqProtocol::YURLAPS
+                    && at_offset.protocol == IqProtocol::YURLAPS;
+                if (stronger || equal_legacy) at_offset = candidate;
             }
             const float preamble_threshold = at_offset.protocol == IqProtocol::YURLAPS
                 ? YURLAPS_MIN_PREAMBLE_SCORE : MIN_PREAMBLE_SCORE;
             if (at_offset.score >= preamble_threshold) {
                 best = at_offset;
                 best_offset = at_offset.protocol == IqProtocol::YURLAPS
-                    ? offset + static_cast<std::size_t>(YURLAPS_INIT_SYMBOLS * SAMPLES_PER_SYMBOL)
+                    ? offset + static_cast<std::size_t>(YURLAPS_INIT_SAMPLES)
                     : offset;
                 found = true;
             }
@@ -527,7 +560,12 @@ bool IqDecoder::scan() {
             add_hit({preamble_sample, timestamp_for_sample(preamble_sample), best.protocol,
                      *id, metrics.signal_db, 1, 0, metrics.mer_db});
         }
-        cursor = best_offset + static_cast<std::size_t>(FRAME_SAMPLES);
+        cursor = best_offset + static_cast<std::size_t>(FRAME_BODY_SAMPLES);
+        if (best.protocol == IqProtocol::YURLAPS) {
+            // best_offset starts at the preamble. Include the four-symbol tail
+            // so the next scan cannot reinterpret the tail as a new frame.
+            cursor += static_cast<std::size_t>(YURLAPS_TAIL_SAMPLES);
+        }
     }
 
     if (cursor > 0) {

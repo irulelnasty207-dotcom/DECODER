@@ -1,19 +1,14 @@
 # YurLaps Decoder Native
 
-Independent decoder implementation for YurLaps.
+This repository contains an independent native decoder for the YurLaps YLP-1 protocol and the supported legacy formats.
 
-The current implementation accepts only the two protocols that YurLaps
-supports:
+- `YUL` is the coherent-BPSK YLP-1 frame with CRC16 and tail-biting FEC.
+- `OPN` is the existing OpenStint-compatible frame.
+- `AMB` is the legacy RC3 frame.
 
-- `OPN` (YurLaps/OpenStint transponder frames)
-- `AMB` (legacy RC3 frames)
+RC4, RC4 Hybrid, Vostok, and learning messages are rejected. RTL-SDR and ZeroMQ are optional build features.
 
-RC4, RC4 Hybrid, Vostok, and learning messages are intentionally rejected.
-The implementation is written independently from the reference decoder and
-includes an OPN/AMB baseband detector for 2.5 MS/s IQ captures. RTL-SDR and
-ZeroMQ are optional build features enabled by the GitHub Actions workflow.
-
-## Build tanpa hardware
+## Build without hardware
 
 ```sh
 cmake -S . -B build
@@ -21,41 +16,24 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-Untuk build Windows dengan RTL-SDR dan ZeroMQ, jalankan workflow
-`.github/workflows/build.yml` dari root repository. Artifact menghasilkan `YurLapsDecoder.exe`
-beserta DLL yang dibutuhkan.
-
-Mode capture IQ:
+## IQ capture
 
 ```sh
 YurLapsDecoder.exe --iq passing.iq
 ```
 
-Mode RTL-SDR:
+## RTL-SDR
 
 ```sh
 YurLapsDecoder.exe --rtl YD0001 28
 ```
 
-Output passing dikirim ke stdout dan, bila dibangun dengan ZeroMQ, ke
-`tcp://127.0.0.1:5556`.
+The decoder estimates the timestamp from the sample index. It scans both ADC sample phases, demodulates coherent BPSK after carrier-phase estimation, validates YLP-1 with CRC16, and groups repeated hits for 40 ms before emitting a passing.
 
-Format pesan kompatibel dengan output OpenStint:
+Output format:
 
 ```text
-P <timestamp_ms> <OPN|AMB> <id> <rssi_dbfs> <hits> <duration_us> <mer_db>
+P <timestamp_ms> <YUL|OPN|AMB> <id> <rssi_dbfs> <hits> <duration_us> <mer_db>
 S <timestamp_ms> <noise_dbfs> <dc_offset> <frames_received> <frames_processed> <jitter_p95_ms>
 T <timestamp_ms> OPN <id> <transponder_timecode>
 ```
-
-Passing baru dikirim setelah minimal dua frame untuk ID yang sama dan quiet
-window 250 ms. Timestamp berasal dari sample awal preamble. `duration_us`
-hanya diisi jika bentuk waveform memberikan crossing yang cukup jelas; jika
-tidak, nilainya `0`. Pesan RC4, RC4 Hybrid, Vostok, dan learning tetap tidak
-masuk ke output race.
-
-Pada backend RTL-SDR, callback USB dikonversi menjadi timestamp sample awal
-buffer. Setiap buffer memiliki anchor host sendiri, sehingga jeda callback
-tidak membuat timestamp berikutnya kembali ke nol atau bergeser mengikuti
-kecepatan pemrosesan CPU. Blog V4 memakai tuner internalnya; dongle non-V4
-diatur ke direct sampling untuk carrier OPN 5 MHz.

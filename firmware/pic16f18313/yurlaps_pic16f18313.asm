@@ -1,9 +1,9 @@
 ; YurLaps PIC16F18313 fixed-timing transmitter prototype
 ;
-; This file emits the YurLaps test frame for ID 2504260 using the
-; PIC16F18313 DSM/CWG path. The 104 transmitted bits are differential phase
-; bits. The byte stream was generated from the YurLaps ID, CRC16, K=9
-; tail-biting rate-1/2 payload, and a four-bit tail.
+; This file emits the YLP-1 coherent-BPSK test frame for ID 2504260 using the
+; PIC16F18313 DSM/CWG path. The 104 transmitted symbols are four low init
+; symbols, Barker-13 padded to 0xF9A8, a CRC16-protected K=9 tail-biting
+; payload, and four low tail symbols.
 ;
 ; Build with MPASM for PIC16F18313. This file is independent firmware and is
 ; not a copy of an OpenStint or RC Hourglass message table.
@@ -24,7 +24,7 @@ led_count  RES 1
 SEND_BIT MACRO source
     ; Coherent BPSK. The bit directly selects the DSM phase.
     NOP
-    LSLF source, 1
+    LSLF INDF0, 1
     BTFSC STATUS, C
     BSF MDCON, MDBIT
     BTFSS STATUS, C
@@ -40,6 +40,7 @@ SEND_BYTE MACRO source
     SEND_BIT source
     SEND_BIT source
     SEND_BIT source
+    INCF FSR0L, 1
     ENDM
 
 RES_VECTOR CODE 0x0000
@@ -142,12 +143,12 @@ setup
     BCF MDCON, MDBIT
     BSF MDCON, MDEN
 
-    ; 0A E6 81 18 80 FE 2B 27 F5 00 C2 55 90
-    ; 4 init + 0xAE68 marker + 80 tail-biting FEC/CRC bits + four tail bits
+    ; 0F 9A 81 18 80 FE 2B 27 F5 00 C2 55 90
+    ; 4 init + 0xF9A8 Barker/pad + 80 tail-biting FEC/CRC bits + four tail bits
     BANKSEL message_ram
-    MOVLW 0x0A
+    MOVLW 0x0F
     MOVWF message_ram+0
-    MOVLW 0xE6
+    MOVLW 0x9A
     MOVWF message_ram+1
     MOVLW 0x81
     MOVWF message_ram+2
@@ -173,6 +174,11 @@ setup
     MOVWF message_ram+12
 
 send_frame
+    BANKSEL FSR0L
+    MOVLW LOW message_ram
+    MOVWF FSR0L
+    MOVLW HIGH message_ram
+    MOVWF FSR0H
     BANKSEL MDCON
     BCF MDCON, MDBIT
     SEND_BYTE (message_ram+0)
@@ -192,6 +198,7 @@ send_frame
     NOP
 
     BANKSEL LATA
+    MOVLW 0x04
     XORWF LATA, 1
     BANKSEL delay_low
     MOVLW 0x40

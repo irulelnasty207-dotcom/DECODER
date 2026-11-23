@@ -1,27 +1,13 @@
 # YurLaps PIC16F18313 firmware
 
-This is the PIC firmware source for the first YurLaps protocol test on the RC
-Hourglass PIC16F18313 hardware. It emits the YurLaps marker `0xA65C`, a 24-bit
-ID, an 8-bit sequence, and an 8-bit CRC protected by K=9 rate-1/2 encoding.
+This firmware emits the YLP-1 coherent-BPSK frame on the PIC16F18313 RF path used by the RC Hourglass test board. The frame has four init symbols, the `0xF9A8` Barker-13 marker, a 24-bit ID, CRC16, K=9 rate-1/2 tail-biting FEC, and four tail symbols.
 
-For the RC Hourglass timing test, use `yurlaps_pic16f18313.asm`. The C source
-is retained as a reference encoder, but its instruction timing is unsuitable
-for a 1.25 MHz symbol clock. The assembly source sends a fixed frame with
-ID `2504260` and uses the same DSM/CWG/PPS hardware path as the test board.
-
-The source is written for MPLAB XC8. Set the ID at build time, for example:
+Use `yurlaps_pic16f18313.asm` for the fixed-timing MPLAB MPASM build. The file contains a test vector for ID `2504260`. Its frame bytes are:
 
 ```text
--DYURLAPS_ID=2504260
+0F 9A 81 18 80 FE 2B 27 F5 00 C2 55 90
 ```
 
-Build target: `PIC16F18313`.
+The C source describes the same protocol and is useful for an XC8 prototype. Its instruction timing is not as deterministic as the assembly build.
 
-The project must be configured for the actual RC Hourglass board pin mapping.
-The source selects the DSM, CLC, and CWG path used by the documented board
-layout. Verify carrier output with an oscilloscope or RTL-SDR before applying
-the HEX to another unit.
-
-The current source default is ID `2504260`. A HEX file cannot be generated in
-the current environment because XC8/PIC-AS is not installed. Generate the HEX
-in MPLAB X, then test one spare transponder before production flashing.
+Build target: `PIC16F18313`. Verify the actual RF output with an oscilloscope or RTL-SDR before flashing another transponder.

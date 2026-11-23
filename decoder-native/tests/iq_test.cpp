@@ -1,10 +1,13 @@
 #include "yurlaps_decoder/iq.hpp"
+#include "yurlaps_decoder/yurlaps.hpp"
 
 #include <array>
 #include <cassert>
 #include <complex>
 #include <cstdint>
 #include <vector>
+
+using namespace yurlaps::decoder;
 
 namespace {
 
@@ -76,6 +79,7 @@ int main() {
     decoder.feed(samples);
     decoder.flush();
     assert(passings.size() == 1);
+    assert(passings.front().protocol == IqProtocol::OPN);
     assert(passings.front().id == id);
     assert(passings.front().hits == 2);
     assert(passings.front().mer_db > 20.0f);
@@ -121,4 +125,42 @@ int main() {
     assert(timed_passings.size() == 1);
     assert(timed_passings.front().timestamp_us >= 300'000);
     assert(timed_passings.front().timestamp_us < 301'000);
+
+
+    // YLP-1 uses coherent BPSK, a four-symbol init, and the Barker/pad
+    // marker 0xF9A8. Its CRC16 FEC path must survive an arbitrary carrier
+    // phase and be grouped into one passing.
+    std::vector<IqSample> yurlaps_samples;
+    const auto yurlaps_payload = encode_yurlaps(2504260u);
+    const auto append_yurlaps_symbol = [&yurlaps_samples](float sign) {
+        const auto value = std::polar(0.8f, 0.71f) * sign;
+        yurlaps_samples.push_back({value.real(), value.imag()});
+        yurlaps_samples.push_back({value.real(), value.imag()});
+    };
+    for (int repeat = 0; repeat < 3; ++repeat) {
+        for (int symbol = 0; symbol < 4; ++symbol) append_yurlaps_symbol(-1.0f);
+        for (int symbol = 0; symbol < 16; ++symbol) {
+            const float sign = (YURLAPS_PREAMBLE & (1u << (15 - symbol)))
+                ? 1.0f : -1.0f;
+            append_yurlaps_symbol(sign);
+        }
+        for (const auto softbit : yurlaps_payload) {
+            append_yurlaps_symbol(softbit > 127u ? 1.0f : -1.0f);
+        }
+        for (int symbol = 0; symbol < 4; ++symbol) append_yurlaps_symbol(-1.0f);
+        yurlaps_samples.insert(yurlaps_samples.end(), 100, {0.0f, 0.0f});
+    }
+    IqDecoder yurlaps_decoder;
+    std::vector<IqPassing> yurlaps_passings;
+    yurlaps_decoder.set_callback([&yurlaps_passings](const IqPassing& passing) {
+        yurlaps_passings.push_back(passing);
+    });
+    yurlaps_decoder.feed(yurlaps_samples);
+    yurlaps_decoder.flush();
+    assert(yurlaps_passings.size() == 1);
+    assert(yurlaps_passings.front().protocol == IqProtocol::YURLAPS);
+    assert(yurlaps_passings.front().id == 2504260u);
+    assert(yurlaps_passings.front().hits == 3u);
+    assert(yurlaps_passings.front().mer_db > 20.0f);
+
 }

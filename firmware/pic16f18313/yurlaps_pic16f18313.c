@@ -1,19 +1,22 @@
 /*
- * YurLaps PIC16F18313 transmitter prototype.
+ * YurLaps YLP-1 transmitter for PIC16F18313.
  *
- * This source emits the YurLaps test protocol. It does not contain the
- * RC Hourglass message tables or its decoder protocol. The RF output stage
- * still has to match the user's PIC16F18313 transponder PCB.
+ * YLP-1 is a coherent-BPSK frame. It has four low init symbols, the
+ * Barker-13 marker padded to 0xF9A8, a 24-bit ID plus CRC16 protected by a
+ * K=9 rate-1/2 tail-biting code, and four low tail symbols. There is no
+ * sequence field and no RC4 learning/status frame.
  *
- * Build with MPLAB XC8 for PIC16F18313. Set YURLAPS_ID for each unit.
+ * This source uses the RC Hourglass PIC16F18313 RF path as a test platform.
+ * It does not copy its message tables. The assembly source in this folder is
+ * the fixed-timing build used for a production timing test.
  */
 
 #include <stdint.h>
 #include <xc.h>
 
 #define _XTAL_FREQ 20000000UL
+#define YURLAPS_PREAMBLE 0xF9A8u
 
-/* External oscillator and 4x PLL are required by the 5 MHz DSM reference. */
 #pragma config FEXTOSC = HS
 #pragma config RSTOSC = EXT4X
 #pragma config CLKOUTEN = OFF
@@ -40,13 +43,55 @@
 #error "YURLAPS_ID must fit in a non-zero 24-bit value"
 #endif
 
-static uint8_t sequence;
 static uint8_t convolution_state;
 static uint8_t led_divider;
-static uint8_t phase_state;
+
+static uint8_t parity16(uint16_t value) {
+    uint8_t result = 0u;
+    while (value != 0u) {
+        result ^= (uint8_t)(value & 1u);
+        value >>= 1u;
+    }
+    return result;
+}
+
+static uint16_t crc16(const uint8_t *bytes) {
+    uint16_t crc = 0xFFFFu;
+    uint8_t index;
+    uint8_t bit;
+    uint8_t carry;
+    for (index = 0u; index < 3u; ++index) {
+        crc ^= (uint16_t)bytes[index] << 8u;
+        for (bit = 0u; bit < 8u; ++bit) {
+            carry = (uint8_t)(crc & 0x8000u);
+            crc <<= 1u;
+            if (carry != 0u) crc ^= 0x1021u;
+        }
+    }
+    return crc;
+}
+
+static uint8_t payload_bit(const uint8_t *bytes, uint8_t index) {
+    return (uint8_t)((bytes[index >> 3u] >> (7u - (index & 7u))) & 1u);
+}
+
+static uint8_t tail_biting_state(const uint8_t *bytes) {
+    uint16_t candidate;
+    uint8_t bit;
+    uint8_t state;
+    for (candidate = 0u; candidate < 256u; ++candidate) {
+        state = (uint8_t)candidate;
+        for (bit = 0u; bit < 40u; ++bit) {
+            state = (uint8_t)(((uint16_t)state << 1u)
+                              | payload_bit(bytes, bit));
+        }
+        if (state == (uint8_t)candidate) return state;
+    }
+    return 0u;
+}
 
 static void led_toggle(void) {
-    LATA ^= 0x04u;
+    LATA = (uint8_t)(LATA ^ 0x04u);
 }
 
 static void led_startup_test(void) {
@@ -59,38 +104,8 @@ static void led_startup_test(void) {
     }
 }
 
-static uint8_t parity16(uint16_t value) {
-    uint8_t result = 0;
-    while (value != 0u) {
-        result ^= (uint8_t)(value & 1u);
-        value >>= 1u;
-    }
-    return result;
-}
-
-static uint8_t crc8(uint32_t id, uint8_t seq) {
-    uint8_t bytes[4];
-    uint8_t crc = 0;
-    uint8_t index;
-    uint8_t bit;
-    uint8_t carry;
-    bytes[0] = (uint8_t)(id >> 16u);
-    bytes[1] = (uint8_t)(id >> 8u);
-    bytes[2] = (uint8_t)id;
-    bytes[3] = seq;
-    for (index = 0; index < 4u; ++index) {
-        crc ^= bytes[index];
-        for (bit = 0; bit < 8u; ++bit) {
-            carry = (uint8_t)(crc & 0x80u);
-            crc <<= 1u;
-            if (carry != 0u) crc ^= 0x07u;
-        }
-    }
-    return crc;
-}
-
 static void symbol_delay(void) {
-    /* Four instruction cycles at 20 MHz = 0.8 us, or 1.25 MS/s. */
+    /* The assembly build is preferred for exact 1.25 Msymbol/s timing. */
     __asm("nop");
     __asm("nop");
     __asm("nop");
@@ -98,61 +113,50 @@ static void symbol_delay(void) {
 }
 
 static void set_modulation_bit(uint8_t bit) {
-    /* RC Hourglass uses differential BPSK. A one toggles the carrier phase,
-       while a zero leaves the previous phase unchanged. */
-    if (bit != 0u) phase_state ^= 1u;
-    MDCONbits.MDBIT = phase_state != 0u;
+    /* Coherent BPSK uses the absolute phase for every symbol. */
+    MDCONbits.MDBIT = bit != 0u;
     symbol_delay();
 }
 
 static void send_marker(void) {
-    uint8_t index;
     int8_t bit;
-    /* Four low init symbols followed by the YurLaps 0xA65C marker. */
-    for (index = 0; index < 4u; ++index) set_modulation_bit(0u);
-    for (bit = 15; bit >= 0; --bit)
-        set_modulation_bit((uint8_t)((0xA65Cu >> bit) & 1u));
+    uint8_t index;
+    for (index = 0u; index < 4u; ++index) set_modulation_bit(0u);
+    for (bit = 15; bit >= 0; --bit) {
+        set_modulation_bit((uint8_t)((YURLAPS_PREAMBLE >> bit) & 1u));
+    }
 }
 
 static void send_protected_bit(uint8_t bit) {
-    uint16_t register_value;
-    register_value = (uint16_t)(((uint16_t)convolution_state << 1u)
-                                | (uint16_t)(bit & 1u));
+    uint16_t register_value = (uint16_t)(((uint16_t)convolution_state << 1u)
+                                         | (uint16_t)(bit & 1u));
     set_modulation_bit(parity16((uint16_t)(register_value & 0x01AFu)));
     set_modulation_bit(parity16((uint16_t)(register_value & 0x011Du)));
-    convolution_state = (uint8_t)(register_value & 0x00FFu);
-}
-
-static void send_payload_byte(uint8_t value) {
-    int8_t bit;
-    for (bit = 7; bit >= 0; --bit)
-        send_protected_bit((uint8_t)((value >> bit) & 1u));
+    convolution_state = (uint8_t)register_value;
 }
 
 static void send_frame(void) {
-    uint8_t id_high;
-    uint8_t id_middle;
-    uint8_t id_low;
-    uint8_t checksum;
+    uint8_t bytes[5];
+    uint16_t checksum;
+    uint8_t index;
+    uint8_t bit;
 
-    id_high = (uint8_t)(YURLAPS_ID >> 16u);
-    id_middle = (uint8_t)(YURLAPS_ID >> 8u);
-    id_low = (uint8_t)YURLAPS_ID;
-    checksum = crc8(YURLAPS_ID, sequence);
+    bytes[0] = (uint8_t)(YURLAPS_ID >> 16u);
+    bytes[1] = (uint8_t)(YURLAPS_ID >> 8u);
+    bytes[2] = (uint8_t)YURLAPS_ID;
+    checksum = crc16(bytes);
+    bytes[3] = (uint8_t)(checksum >> 8u);
+    bytes[4] = (uint8_t)checksum;
 
-    convolution_state = 0u;
-    phase_state = 0u;
+    convolution_state = tail_biting_state(bytes);
     send_marker();
-    send_payload_byte(id_high);
-    send_payload_byte(id_middle);
-    send_payload_byte(id_low);
-    send_payload_byte(sequence);
-    send_payload_byte(checksum);
+    for (index = 0u; index < 40u; ++index) {
+        send_protected_bit(payload_bit(bytes, index));
+    }
+    for (bit = 0u; bit < 4u; ++bit) set_modulation_bit(0u);
 }
 
 static void setup_rf_path(void) {
-    /* These values select the 5 MHz DSM reference used by the PCB. */
-    /* RA0/RA1 are the two RF outputs. RA2 is the status LED. RA3 stays input. */
     PORTA = 0u;
     LATA = 0u;
     ANSELA = 0u;
@@ -162,7 +166,6 @@ static void setup_rf_path(void) {
     SLRCONA = 0x04u;
     CLKRCON = 0x92u;
 
-    /* Free-running Timer0 supplies repeat jitter. */
     T0CON1 = 0x40u;
     T0CON0 = 0x80u;
 
@@ -171,7 +174,6 @@ static void setup_rf_path(void) {
     MDCARH = 0x23u;
     MDCARL = 0x63u;
 
-    /* CLC1 routes DSM output to the board's RF path. */
     CLC1CON = 0x04u;
     CLC1SEL0 = 0x0Au;
     CLC1SEL1 = 0x1Fu;
@@ -191,7 +193,7 @@ static void setup_rf_path(void) {
     CWG1AS1 = 0u;
     CWG1STR = 0u;
     CWG1DAT = 0x0Au;
-    /* Route CWG1A/CWG1B to RA0/RA1 through PPS. */
+
     INTCONbits.GIE = 0u;
     PPSLOCK = 0x55u;
     PPSLOCK = 0xAAu;
@@ -211,31 +213,25 @@ static void setup_rf_path(void) {
 }
 
 static uint16_t next_silence_us(void) {
-    uint16_t random_part;
-    /* Timer0 is free-running. Every value maps to 750..2250 us. */
-    random_part = (uint16_t)TMR0L * 1501u / 256u;
-    return (uint16_t)(750u + random_part);
+    return (uint16_t)(750u + ((uint16_t)TMR0L * 1501u / 256u));
 }
 
 static void silence(void) {
-    uint16_t duration;
+    uint16_t duration = next_silence_us();
     uint16_t us;
-    duration = next_silence_us();
     MDCONbits.MDEN = 0u;
-    for (us = 0; us < duration; ++us) __delay_us(1);
+    for (us = 0u; us < duration; ++us) __delay_us(1);
     MDCONbits.MDBIT = 0u;
     MDCONbits.MDEN = 1u;
 }
 
 void main(void) {
     setup_rf_path();
-    LATA &= (uint8_t)~0x04u;
     led_startup_test();
     for (;;) {
         send_frame();
-        ++sequence;
         ++led_divider;
-        if (led_divider >= 32u) {
+        if (led_divider == 32u) {
             led_divider = 0u;
             led_toggle();
         }
