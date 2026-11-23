@@ -22,6 +22,7 @@ namespace {
 
 constexpr int SAMPLES_PER_SYMBOL = 2;
 constexpr int PREAMBLE_SYMBOLS = 16;
+constexpr int YURLAPS_INIT_SYMBOLS = 4;
 constexpr int PAYLOAD_SYMBOLS = static_cast<int>(YURLAPS_PAYLOAD_SYMBOLS);
 constexpr int FRAME_SAMPLES = (PREAMBLE_SYMBOLS + PAYLOAD_SYMBOLS) * SAMPLES_PER_SYMBOL;
 constexpr int FRAME_WINDOW_SAMPLES = FRAME_SAMPLES + SAMPLES_PER_SYMBOL - 1;
@@ -473,15 +474,21 @@ bool IqDecoder::scan() {
                      std::pair<std::uint16_t, IqProtocol>{YURLAPS_PREAMBLE, IqProtocol::YURLAPS},
                      std::pair<std::uint16_t, IqProtocol>{OPN_PREAMBLE, IqProtocol::OPN},
                      std::pair<std::uint16_t, IqProtocol>{AMB_PREAMBLE, IqProtocol::AMB}}) {
-                if (!quick_preamble_gate(buffer_, offset, preamble)) continue;
-                const auto candidate = match_preamble(buffer_, offset, preamble, protocol);
+                const auto marker_offset = protocol == IqProtocol::YURLAPS
+                    ? offset + static_cast<std::size_t>(YURLAPS_INIT_SYMBOLS * SAMPLES_PER_SYMBOL)
+                    : offset;
+                if (marker_offset + FRAME_WINDOW_SAMPLES > buffer_.size()) continue;
+                if (!quick_preamble_gate(buffer_, marker_offset, preamble)) continue;
+                const auto candidate = match_preamble(buffer_, marker_offset, preamble, protocol);
                 if (candidate.score > at_offset.score) at_offset = candidate;
             }
             const float preamble_threshold = at_offset.protocol == IqProtocol::YURLAPS
                 ? YURLAPS_MIN_PREAMBLE_SCORE : MIN_PREAMBLE_SCORE;
             if (at_offset.score >= preamble_threshold) {
                 best = at_offset;
-                best_offset = offset;
+                best_offset = at_offset.protocol == IqProtocol::YURLAPS
+                    ? offset + static_cast<std::size_t>(YURLAPS_INIT_SYMBOLS * SAMPLES_PER_SYMBOL)
+                    : offset;
                 found = true;
             }
         }
