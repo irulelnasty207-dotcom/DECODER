@@ -37,7 +37,7 @@ constexpr float YURLAPS_MIN_SNR_DB = 3.0f;
 constexpr std::size_t NOISE_WINDOW_SIZE = 4096;
 constexpr std::uint16_t OPN_PREAMBLE = 0xf9a8;
 constexpr std::uint16_t AMB_PREAMBLE = 0x51e4;
-constexpr std::uint16_t YURLAPS_PREAMBLE = 0xa65c;
+constexpr std::uint16_t YURLAPS_PREAMBLE = 0xae68;
 constexpr float ADC_FULL_SCALE = 1.41421356237f;
 
 struct Candidate {
@@ -408,8 +408,7 @@ void IqDecoder::emit(Pending& pending) {
         static_cast<std::uint32_t>(pending.hits.size()),
         estimate.duration_us,
         estimate.mer_db,
-        pending.protocol == IqProtocol::YURLAPS && pending.last_sequence
-            ? pending.last_sequence : std::nullopt,
+        std::nullopt,
     };
     callback_(passing);
 }
@@ -447,15 +446,10 @@ void IqDecoder::add_hit(const IqPassing& hit) {
     const auto key = (protocol_key << 32u) | hit.id;
     auto found = pending_.find(key);
     if (found == pending_.end()) {
-        Pending pending{hit.protocol, hit.id, {HitSample{hit.sample_index, hit.rssi_db, hit.mer_db}}, {}, hit.sequence};
-        if (hit.sequence) pending.yurlaps_sequences.insert(*hit.sequence);
+        Pending pending{hit.protocol, hit.id, {HitSample{hit.sample_index, hit.rssi_db, hit.mer_db}}};
         pending_.emplace(key, std::move(pending));
         return;
     }
-    if (hit.protocol == IqProtocol::YURLAPS && hit.sequence
-        && !found->second.yurlaps_sequences.insert(*hit.sequence).second) return;
-    if (hit.protocol == IqProtocol::YURLAPS && hit.sequence)
-        found->second.last_sequence = hit.sequence;
     found->second.hits.push_back({hit.sample_index, hit.rssi_db, hit.mer_db});
 }
 

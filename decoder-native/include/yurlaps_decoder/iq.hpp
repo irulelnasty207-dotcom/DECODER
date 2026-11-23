@@ -30,7 +30,6 @@ struct IqPassing {
     std::uint32_t hits{};
     std::uint64_t duration_us{};
     float mer_db{};
-    std::optional<std::uint8_t> sequence;
 };
 
 using PassingCallback = std::function<void(const IqPassing&)>;
@@ -43,7 +42,6 @@ struct IqHit {
     float rssi_db{};
     float mer_db{};
     std::uint8_t status{};
-    std::optional<std::uint8_t> sequence;
 };
 
 using HitCallback = std::function<void(const IqHit&)>;
@@ -121,8 +119,6 @@ private:
         IqProtocol protocol{IqProtocol::OPN};
         std::uint32_t id{};
         std::vector<HitSample> hits;
-        std::unordered_set<std::uint8_t> yurlaps_sequences;
-        std::optional<std::uint8_t> last_sequence;
     };
     std::unordered_map<std::uint64_t, Pending> pending_;
 

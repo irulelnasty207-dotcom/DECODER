@@ -65,9 +65,9 @@ int main() {
     assert(!parse_line("P 1 OPN 10000000 -3 4 90000 12"));
     assert(!parse_line("garbage"));
 
-    const auto yurlaps = encode_yurlaps(7654321u, 42u);
+    const auto yurlaps = encode_yurlaps(7654321u);
     const auto decoded_yurlaps = decode_yurlaps(yurlaps);
-    assert(decoded_yurlaps && decoded_yurlaps->id == 7654321u && decoded_yurlaps->sequence == 42u);
+    assert(decoded_yurlaps && decoded_yurlaps->id == 7654321u);
     auto damaged_yurlaps = yurlaps;
     damaged_yurlaps[10] = static_cast<std::uint8_t>(255u - damaged_yurlaps[10]);
     assert(decode_yurlaps(damaged_yurlaps));

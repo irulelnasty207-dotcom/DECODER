@@ -4,6 +4,11 @@ This is the PIC firmware source for the first YurLaps protocol test on the RC
 Hourglass PIC16F18313 hardware. It emits the YurLaps marker `0xA65C`, a 24-bit
 ID, an 8-bit sequence, and an 8-bit CRC protected by K=9 rate-1/2 encoding.
 
+For the RC Hourglass timing test, use `yurlaps_pic16f18313.asm`. The C source
+is retained as a reference encoder, but its instruction timing is unsuitable
+for a 1.25 MHz symbol clock. The assembly source sends a fixed frame with
+ID `2504260` and uses the same DSM/CWG/PPS hardware path as the test board.
+
 The source is written for MPLAB XC8. Set the ID at build time, for example:
 
 ```text
