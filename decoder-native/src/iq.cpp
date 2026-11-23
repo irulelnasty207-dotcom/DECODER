@@ -61,10 +61,13 @@ Candidate match_preamble(const std::vector<IqSample>& samples,
         std::complex<float> phase_correlation{};
         float energy = 0.0f;
         std::complex<float> previous{};
+        int differential_state = 0;
         for (int symbol = 0; symbol < PREAMBLE_SYMBOLS; ++symbol) {
             const auto& sample = samples[offset + static_cast<std::size_t>(symbol * SAMPLES_PER_SYMBOL + phase)];
             const std::complex<float> value{sample.i, sample.q};
-            const float expected = (preamble & (1u << (PREAMBLE_SYMBOLS - 1 - symbol))) ? 1.0f : -1.0f;
+            const int bit = (preamble & (1u << (PREAMBLE_SYMBOLS - 1 - symbol))) ? 1 : 0;
+            if (protocol == IqProtocol::YURLAPS) differential_state ^= bit;
+            const float expected = ((protocol == IqProtocol::YURLAPS ? differential_state : bit) != 0) ? 1.0f : -1.0f;
             const auto aligned = value * expected;
             correlation += aligned;
             if (symbol > 0) phase_correlation += aligned * std::conj(previous);
@@ -94,10 +97,13 @@ bool quick_preamble_gate(const std::vector<IqSample>& samples,
         float correlation_i = 0.0f;
         float correlation_q = 0.0f;
         float energy = 0.0f;
+        int differential_state = 0;
         for (int symbol = 0; symbol < QUICK_PREAMBLE_SYMBOLS; ++symbol) {
             const auto& sample = samples[offset + static_cast<std::size_t>(
                 symbol * SAMPLES_PER_SYMBOL + phase)];
-            const float expected = (preamble & (1u << (PREAMBLE_SYMBOLS - 1 - symbol)))
+            const int bit = (preamble & (1u << (PREAMBLE_SYMBOLS - 1 - symbol))) ? 1 : 0;
+            if (preamble == YURLAPS_PREAMBLE) differential_state ^= bit;
+            const float expected = ((preamble == YURLAPS_PREAMBLE ? differential_state : bit) != 0)
                 ? 1.0f : -1.0f;
             correlation_i += sample.i * expected;
             correlation_q += sample.q * expected;
@@ -117,10 +123,22 @@ FrameMetrics decode_metrics(const std::vector<IqSample>& samples,
                             int phase,
                             float phase_at_preamble_center,
                             float phase_per_symbol,
+                            IqProtocol protocol,
                             std::array<std::uint8_t, PAYLOAD_SYMBOLS>& softbits) {
     float signal = 0.0f;
     std::vector<std::complex<float>> symbols;
     symbols.reserve(PAYLOAD_SYMBOLS);
+    std::complex<float> previous_symbol{1.0f, 0.0f};
+    if (protocol == IqProtocol::YURLAPS) {
+        const std::size_t previous_offset = offset
+            + static_cast<std::size_t>((PREAMBLE_SYMBOLS - 1) * SAMPLES_PER_SYMBOL + phase);
+        std::complex<float> carrier{};
+        for (int sample = 0; sample < SAMPLES_PER_SYMBOL; ++sample) {
+            const auto& point = samples[previous_offset + static_cast<std::size_t>(sample)];
+            carrier += std::complex<float>{point.i, point.q};
+        }
+        if (std::abs(carrier) > 1e-6f) previous_symbol = carrier / std::abs(carrier);
+    }
     for (int symbol = 0; symbol < PAYLOAD_SYMBOLS; ++symbol) {
         const std::size_t sample_offset = offset
             + static_cast<std::size_t>((PREAMBLE_SYMBOLS + symbol) * SAMPLES_PER_SYMBOL + phase);
@@ -135,6 +153,12 @@ FrameMetrics decode_metrics(const std::vector<IqSample>& samples,
             value += std::complex<float>{point.i, point.q} * correction;
         }
         value /= static_cast<float>(SAMPLES_PER_SYMBOL);
+        if (protocol == IqProtocol::YURLAPS) {
+            const auto carrier_symbol = value;
+            value = value * std::conj(previous_symbol);
+            previous_symbol = std::abs(carrier_symbol) > 1e-6f
+                ? std::complex<float>{carrier_symbol / std::abs(carrier_symbol)} : previous_symbol;
+        } else previous_symbol = value;
         symbols.push_back(value);
         signal += std::abs(value);
         const float normalized = std::clamp(value.real(), -1.0f, 1.0f);
@@ -454,7 +478,7 @@ bool IqDecoder::scan() {
         frame_seen = true;
         std::array<std::uint8_t, PAYLOAD_SYMBOLS> softbits{};
         const auto metrics = decode_metrics(buffer_, best_offset, best.phase,
-            best.phase_at_preamble_center, best.phase_per_symbol, softbits);
+            best.phase_at_preamble_center, best.phase_per_symbol, best.protocol, softbits);
 
         ++frames_received_;
         const float noise_db = noise_floor_db();

@@ -1,0 +1,17 @@
+Target: PIC16F18313
+Compiler: MPLAB XC8
+Source: yurlaps_pic16f18313.c
+ID: 2504260
+
+Create a standalone MPLAB X project for PIC16F18313, add the source file, and
+select the high-speed external oscillator configuration used by the board.
+Build the project. The generated dist/default/production/*.hex is the file to
+load with the RC Hourglass programming path.
+
+Verify the generated HEX before flashing:
+
+1. Confirm the device target is PIC16F18313.
+2. Confirm configuration words are present.
+3. Flash one spare transponder.
+4. Observe the 5 MHz carrier with RTL-SDR or an oscilloscope.
+5. Confirm the YurLaps Decoder reports YUL 2504260.
