@@ -64,13 +64,11 @@ Candidate match_preamble(const std::vector<IqSample>& samples,
         std::complex<float> phase_correlation{};
         float energy = 0.0f;
         std::complex<float> previous{};
-        int differential_state = 0;
         for (int symbol = 0; symbol < PREAMBLE_SYMBOLS; ++symbol) {
             const auto& sample = samples[offset + static_cast<std::size_t>(symbol * SAMPLES_PER_SYMBOL + phase)];
             const std::complex<float> value{sample.i, sample.q};
             const int bit = (preamble & (1u << (PREAMBLE_SYMBOLS - 1 - symbol))) ? 1 : 0;
-            if (protocol == IqProtocol::YURLAPS) differential_state ^= bit;
-            const float expected = ((protocol == IqProtocol::YURLAPS ? differential_state : bit) != 0) ? 1.0f : -1.0f;
+            const float expected = bit != 0 ? 1.0f : -1.0f;
             const auto aligned = value * expected;
             correlation += aligned;
             if (symbol > 0) phase_correlation += aligned * std::conj(previous);
@@ -100,14 +98,11 @@ bool quick_preamble_gate(const std::vector<IqSample>& samples,
         float correlation_i = 0.0f;
         float correlation_q = 0.0f;
         float energy = 0.0f;
-        int differential_state = 0;
         for (int symbol = 0; symbol < QUICK_PREAMBLE_SYMBOLS; ++symbol) {
             const auto& sample = samples[offset + static_cast<std::size_t>(
                 symbol * SAMPLES_PER_SYMBOL + phase)];
             const int bit = (preamble & (1u << (PREAMBLE_SYMBOLS - 1 - symbol))) ? 1 : 0;
-            if (preamble == YURLAPS_PREAMBLE) differential_state ^= bit;
-            const float expected = ((preamble == YURLAPS_PREAMBLE ? differential_state : bit) != 0)
-                ? 1.0f : -1.0f;
+            const float expected = bit != 0 ? 1.0f : -1.0f;
             correlation_i += sample.i * expected;
             correlation_q += sample.q * expected;
             energy += sample.i * sample.i + sample.q * sample.q;
@@ -128,20 +123,10 @@ FrameMetrics decode_metrics(const std::vector<IqSample>& samples,
                             float phase_per_symbol,
                             IqProtocol protocol,
                             std::array<std::uint8_t, PAYLOAD_SYMBOLS>& softbits) {
+    (void)protocol;
     float signal = 0.0f;
     std::vector<std::complex<float>> symbols;
     symbols.reserve(PAYLOAD_SYMBOLS);
-    std::complex<float> previous_symbol{1.0f, 0.0f};
-    if (protocol == IqProtocol::YURLAPS) {
-        const std::size_t previous_offset = offset
-            + static_cast<std::size_t>((PREAMBLE_SYMBOLS - 1) * SAMPLES_PER_SYMBOL + phase);
-        std::complex<float> carrier{};
-        for (int sample = 0; sample < SAMPLES_PER_SYMBOL; ++sample) {
-            const auto& point = samples[previous_offset + static_cast<std::size_t>(sample)];
-            carrier += std::complex<float>{point.i, point.q};
-        }
-        if (std::abs(carrier) > 1e-6f) previous_symbol = carrier / std::abs(carrier);
-    }
     for (int symbol = 0; symbol < PAYLOAD_SYMBOLS; ++symbol) {
         const std::size_t sample_offset = offset
             + static_cast<std::size_t>((PREAMBLE_SYMBOLS + symbol) * SAMPLES_PER_SYMBOL + phase);
@@ -156,12 +141,6 @@ FrameMetrics decode_metrics(const std::vector<IqSample>& samples,
             value += std::complex<float>{point.i, point.q} * correction;
         }
         value /= static_cast<float>(SAMPLES_PER_SYMBOL);
-        if (protocol == IqProtocol::YURLAPS) {
-            const auto carrier_symbol = value;
-            value = value * std::conj(previous_symbol);
-            previous_symbol = std::abs(carrier_symbol) > 1e-6f
-                ? std::complex<float>{carrier_symbol / std::abs(carrier_symbol)} : previous_symbol;
-        } else previous_symbol = value;
         symbols.push_back(value);
         signal += std::abs(value);
         const float normalized = std::clamp(value.real(), -1.0f, 1.0f);
@@ -408,7 +387,6 @@ void IqDecoder::emit(Pending& pending) {
         static_cast<std::uint32_t>(pending.hits.size()),
         estimate.duration_us,
         estimate.mer_db,
-        std::nullopt,
     };
     callback_(passing);
 }
@@ -506,13 +484,9 @@ bool IqDecoder::scan() {
             : (metrics.signal_db >= MIN_SIGNAL_DB);
         bool frame_processed = false;
         std::optional<std::uint32_t> id;
-        std::optional<std::uint8_t> yurlaps_sequence;
         std::uint8_t amb_status = 0;
         if (best.protocol == IqProtocol::YURLAPS) {
-            if (const auto frame = decode_yurlaps(softbits)) {
-                id = frame->id;
-                yurlaps_sequence = frame->sequence;
-            }
+            if (const auto frame = decode_yurlaps(softbits)) id = frame->id;
             frame_processed = id.has_value() && signal_above_noise
                 && metrics.mer_db >= -2.0f;
         } else if (best.protocol == IqProtocol::OPN) {
@@ -529,17 +503,17 @@ bool IqDecoder::scan() {
         const std::uint64_t preamble_sample = absolute_samples_ + best_offset;
         if (signal_above_noise && id && best.protocol == IqProtocol::YURLAPS) {
             if (hit_callback_) hit_callback_({preamble_sample, timestamp_for_sample(preamble_sample), best.protocol,
-                                               *id, metrics.signal_db, metrics.mer_db, 0, yurlaps_sequence});
+                                               *id, metrics.signal_db, metrics.mer_db, 0});
             add_hit({preamble_sample, timestamp_for_sample(preamble_sample), best.protocol,
-                     *id, metrics.signal_db, 1, 0, metrics.mer_db, yurlaps_sequence});
+                     *id, metrics.signal_db, 1, 0, metrics.mer_db});
         } else if (signal_above_noise && id && best.protocol == IqProtocol::OPN) {
             if (*id < 10'000'000u) {
                 if (hit_callback_) {
                     hit_callback_({preamble_sample, timestamp_for_sample(preamble_sample), best.protocol,
-                                   *id, metrics.signal_db, metrics.mer_db, 0, std::nullopt});
+                                   *id, metrics.signal_db, metrics.mer_db, 0});
                 }
                 add_hit({preamble_sample, timestamp_for_sample(preamble_sample), best.protocol,
-                         *id, metrics.signal_db, 1, 0, metrics.mer_db, std::nullopt});
+                         *id, metrics.signal_db, 1, 0, metrics.mer_db});
             } else if ((*id & 0x00a00000u) == 0x00a00000u && time_sync_callback_) {
                 time_sync_callback_({timestamp_for_sample(preamble_sample), *id,
                                       *id & 0x000fffffu});
@@ -548,10 +522,10 @@ bool IqDecoder::scan() {
                    && accept_amb(preamble_sample, *id, amb_status)) {
             if (hit_callback_) {
                 hit_callback_({preamble_sample, timestamp_for_sample(preamble_sample), best.protocol,
-                               *id, metrics.signal_db, metrics.mer_db, amb_status, std::nullopt});
+                               *id, metrics.signal_db, metrics.mer_db, amb_status});
             }
             add_hit({preamble_sample, timestamp_for_sample(preamble_sample), best.protocol,
-                     *id, metrics.signal_db, 1, 0, metrics.mer_db, std::nullopt});
+                     *id, metrics.signal_db, 1, 0, metrics.mer_db});
         }
         cursor = best_offset + static_cast<std::size_t>(FRAME_SAMPLES);
     }

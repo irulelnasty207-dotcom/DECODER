@@ -2,8 +2,8 @@
 ;
 ; This file emits the YurLaps test frame for ID 2504260 using the
 ; PIC16F18313 DSM/CWG path. The 104 transmitted bits are differential phase
-; bits. The byte stream was generated from the YurLaps ID, sequence zero,
-; CRC-8, K=9 rate-1/2 payload, and a four-bit tail.
+; bits. The byte stream was generated from the YurLaps ID, CRC16, K=9
+; tail-biting rate-1/2 payload, and a four-bit tail.
 ;
 ; Build with MPASM for PIC16F18313. This file is independent firmware and is
 ; not a copy of an OpenStint or RC Hourglass message table.
@@ -15,20 +15,20 @@ __CONFIG _CONFIG2, _MCLRE_OFF & _PWRTE_OFF & _WDTE_OFF & _LPBOREN_OFF & _BOREN_O
 __CONFIG _CONFIG3, _WRT_OFF & _LVP_ON
 __CONFIG _CONFIG4, _CP_OFF & _CPD_OFF
 
-SHARED_DATA UDATA_SHR
-message_ram RES 13
-
 BANKED_DATA UDATA
+message_ram RES 13
 delay_low  RES 1
 delay_high RES 1
 led_count  RES 1
 
 SEND_BIT MACRO source
-    ; One symbol is one fixed-time macro expansion. A one toggles DSM phase.
+    ; Coherent BPSK. The bit directly selects the DSM phase.
     NOP
     LSLF source, 1
     BTFSC STATUS, C
-    XORWF MDCON, 1
+    BSF MDCON, MDBIT
+    BTFSS STATUS, C
+    BCF MDCON, MDBIT
     ENDM
 
 SEND_BYTE MACRO source
